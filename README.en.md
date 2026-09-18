@@ -168,7 +168,7 @@ purpose. Change those three and everything else is reusable. Exposing them as CL
     `events.jsonl` and fight over `conn-state.json`, producing what look like duplicated
     events (observed during review).
 12. Reports are in Chinese; `task` / `svc` sources do not emit events yet.
-10. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
+13. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
     (elevated):
     ```powershell
     $a = New-ScheduledTaskAction -Execute 'D:\tools\amon.exe' -Argument '--watch --root D:\amon-state --quiet'
