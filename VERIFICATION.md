@@ -153,3 +153,37 @@ chisel（cursor-acp）第三次尝试仍未产出 verdict：它卡在"PowerShell
 
 **回归**：`--selftest` 12/12 exit 0；生命周期探针（v4 非回环 / 回环 / IPv6 `[::1]`）全部通过。
 二进制 sha256 `849a4dbba32f29fc986da00758b9e4b05cfe39642a867243d3d58a5b8631e5d7`。
+
+## 第 4 轮盲检（对 0.1.1 签名门）— 两席独立 **SHIP**
+
+两席都自建证据树、各自复跑，不借用作者的场景脚本：
+
+| 席 | 结论 | 它自己做的 |
+|---|---|---|
+| audit（devin swe-2） | **SHIP** | 核验 4 个源文件与 exe 的 pin；在**自己的 root** 上跑 `sig-fix-test.ps1`（R1→R2 无回环伪造关闭，旧代码 55 条）；自建伪造用例（复制签名 → 1 条幽灵关闭，与文档量级一致）；`--conn-sec 0` 探针 |
+| forge（GLM 家族，第二席） | **SHIP** | 自建 `bkr3`（6 用例）+ `bkr3v2`（5 用例 A–E）+ 四探针全部复跑；核验"rows 与 sig 取自同一次 sweep"（节流不拆散二者）；遗留 sidecar/baseline 路径；伪造限制与 `CHANGELOG.md` 记载**逐字一致**；只读性（root 外零写入） |
+
+两席一致确认：**原缺陷（回环种子 + 默认过滤 → 伪造关闭）不再复现**，遗留文件走同一拒绝路径，
+签名门是真实修复而非规避。未验证项（两席均如实列出）：真实 `rc!=0` 不完整采样、运行中地址族翻转、
+IPv6-only 主机——都是"无法在本机注入"而非"没看"。
+
+### 两席独立发现的非阻塞项（本轮已修，0.1.2）
+
+1. `conn_seed_rejected` 对 sidecar 恒报 `groups: 0`（我传的是硬编码 0）→ 现在报**实际组数**。
+2. 遗留文件、垃圾文件、换了表面的文件三者不可区分（同走 `OtherSurface`）→ 现在分成
+   `different surface` / `legacy or corrupt file` / `unreadable or corrupt` / `surface unknown` 四种。
+3. `--conn-sec 0` 仍会跑预采样、加载种子、写一行 `conn_state_resumed` → 现在关闭面时**完全不跑**、
+   不写 sidecar、不记行。
+
+### 两席提出的取舍（已写进 README 限制 14）
+
+- 地址族不对称：IPv4 表任何错误 → `complete=false`，该轮不产会话事件；IPv6-only 主机等于没有会话面。
+- IPv6 栈**瞬时**"不支持"被当作"本机没有 IPv6"，该轮 v6 组会被报成关闭——两席均**未能实测**，仅代码级判断。
+
+### 本轮修复的验证强度
+
+上述 0.1.2 的三项改动由**作者自测**（真机：遗留 map 2 组 → `legacy or corrupt file, groups: 2`；
+截断非 JSON → `unreadable or corrupt`；新 root → 无行；`--conn-sec 0` → 无行/无 sidecar/零会话事件；
+同表面重启 → `source: sidecar` 且零重报）。**这三项改动尚未经过独立盲检**——它们不改判定、只改日志措辞
+与关闭态行为，故按非阻塞项处理并如实标注，而不是冒充"已复核"。
+二进制 sha256 `547a11e27c7958cb…`。

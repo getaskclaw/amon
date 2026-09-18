@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.2 — observability cleanups from round 4 (two independent SHIPs)
+
+Three non-blockers that both reviewers found independently, plus two documented trade-offs.
+No change to what the tool reports; only to how it explains itself.
+
+- `conn_seed_rejected` now names the sidecar outcome precisely and carries the real group
+  count: `different surface` (parseable, wrong surface — was `groups: 0` and merged with the
+  legacy case), `legacy or corrupt file` (parseable JSON that is not our shape, e.g. a
+  pre-signature map), `unreadable or corrupt` (present but not JSON), and `surface unknown`
+  (first sweep incomplete). A *missing* file still logs nothing.
+- `--conn-sec 0` no longer runs the pre-seed sweep or writes a resume line: with the surface
+  off there is nothing to seed and nothing to diff, so it says nothing instead of announcing
+  a surface that never runs. The sidecar is not written (verified).
+- README limitations 14/15 record the address-family asymmetry (an IPv6-only host gets no
+  conversation coverage; a transient IPv6-unsupported answer is read as "no IPv6", which can
+  close v6 groups).
+
+Measured after the change (real Windows host): legacy map with 2 groups → `legacy or corrupt
+file, groups: 2`; truncated non-JSON → `unreadable or corrupt`; fresh root → no line;
+`--conn-sec 0` → no meta line, no sidecar, zero conversation events; same-surface restart →
+`conn_state_resumed source:sidecar` with no re-reports.
+
 ## 0.1.1 — filter signature for persisted connection state
 
 **Fixed.** Persisted connection state could describe a different surface than the run that

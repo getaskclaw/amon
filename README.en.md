@@ -178,7 +178,17 @@ purpose. Change those three and everything else is reusable. Exposing them as CL
     reproduced in tests.** Pre-signature (legacy) sidecars and baselines are never trusted, at
     the same one-time cost.
 13. Reports are in Chinese; `task` / `svc` sources do not emit events yet.
-14. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
+14. **Address-family asymmetry**: an unreadable IPv6 table (rc 50/87) degrades gracefully to
+    IPv4 only, but *any* IPv4-table error makes the sweep `complete=false` and that run emits
+    no conversation events at all (conservative: silence over invention). An IPv6-only host
+    therefore has no conversation surface. Separately, a *transient* "IPv6 unsupported"
+    answer is treated as "this host has no IPv6", in which case v6 groups are reported as
+    closed (not measured; the error cannot be injected here).
+15. **`conn_seed_rejected` says why**: `different surface` (the filters changed) /
+    `legacy or corrupt file` (pre-signature or junk, with the real group count) /
+    `unreadable or corrupt` (unreadable, or not JSON) / `surface unknown` (the first sweep
+    was incomplete). A missing file logs nothing — a fresh root should stay quiet.
+16. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
     (elevated):
     ```powershell
     $a = New-ScheduledTaskAction -Execute 'D:\tools\amon.exe' -Argument '--watch --root D:\amon-state --quiet'

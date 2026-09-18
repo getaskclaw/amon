@@ -229,14 +229,19 @@ mod connstate {
     }
 
     /// What a load attempt produced, so the caller can say *why* a seed was skipped
-    /// instead of silently behaving differently.
+    /// instead of silently behaving differently. Each variant carries the group count that
+    /// was actually on disk, because "0 groups" and "the file was not readable" are
+    /// different stories and the log should not merge them.
     pub enum Loaded {
         Usable(Snap),
-        /// Parseable but written under a different surface, or written by a build that
-        /// did not record one.
-        OtherSurface,
-        /// Missing, truncated, or not the shape we write.
-        Unusable,
+        /// Never existed. Silence is right here, or every fresh root would be noisy.
+        Absent,
+        /// Parseable, same shape, but written for another surface.
+        DifferentSurface { groups: usize },
+        /// Parseable JSON that is not our file at all: a pre-signature plain map, or junk.
+        Legacy { groups: usize },
+        /// Present but unreadable or not JSON.
+        Corrupt,
     }
 
     /// Atomic-ish write: temp file then rename, so a reader never sees a half file.
@@ -258,17 +263,24 @@ mod connstate {
     pub fn load(root: &Path, sig: &Sig) -> Loaded {
         let raw = match std::fs::read_to_string(root.join(FILE)) {
             Ok(r) => r,
-            Err(_) => return Loaded::Unusable,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::Absent,
+            Err(_) => return Loaded::Corrupt,
         };
         let f: File = match serde_json::from_str(&raw) {
             Ok(f) => f,
-            // A pre-signature sidecar is a plain map of key -> value; parseable JSON,
-            // but its surface is unknown. Refusing it costs one re-report; trusting it
-            // can cost a fabricated close burst.
-            Err(_) => return Loaded::OtherSurface,
+            // A pre-signature sidecar is a plain map of key -> value: parseable JSON whose
+            // surface is unknown. Refusing it costs one re-report; trusting it can cost a
+            // fabricated close burst. Count what is there so the log can say how much.
+            Err(_) => match serde_json::from_str::<Snap>(&raw) {
+                // Not our file shape, but a parseable JSON map: a pre-signature sidecar.
+                Ok(m) => return Loaded::Legacy { groups: m.len() },
+                // Not JSON at all: truncated write, hand edit, or something else entirely.
+                Err(_) => return Loaded::Corrupt,
+            },
         };
+        let groups = f.rows.len();
         if f.sig != sig.0 {
-            return Loaded::OtherSurface;
+            return Loaded::DifferentSurface { groups };
         }
         Loaded::Usable(
             f.rows
@@ -644,21 +656,29 @@ fn run_watch(args: &Args, cfg: &Config) -> Result<()> {
     let mut channel_ok = ChannelStatus::default();
 
     let mut prev = baseline;
+    let conn_enabled = args.conn_sec > 0;
 
-    // Learn this run's surface *before* deciding whether any persisted seed may be
-    // trusted. The address-family set is only knowable from a sweep, and a seed written
-    // for a different surface is a source of invented closes, not of continuity:
-    // a loopback-inclusive seed plus default filters emitted 58 conn_closed — 55 of them
-    // loopback — for conversations this run could never have opened (reviewed defect).
-    let probe = snapshot::snapshot_connections(&args.conn_filter());
-    let surface = if probe.complete {
-        Some(connstate::Sig::of(&args.conn_filter(), &probe.families))
+    // With the surface switched off there is nothing to seed and nothing to diff, so skip
+    // the probe and the resume line rather than announcing a surface that never runs.
+    //
+    // Otherwise: learn this run's surface *before* deciding whether any persisted seed may
+    // be trusted. The address-family set is only knowable from a sweep, and a seed written
+    // for a different surface is a source of invented closes, not of continuity — a
+    // loopback-inclusive seed plus default filters emitted 58 conn_closed, 55 of them
+    // loopback, for conversations this run could never have opened (reviewed defect).
+    let surface = if conn_enabled {
+        let probe = snapshot::snapshot_connections(&args.conn_filter());
+        if probe.complete {
+            Some(connstate::Sig::of(&args.conn_filter(), &probe.families))
+        } else {
+            None
+        }
     } else {
         None
     };
 
     let mut base_seed: Option<Snap> = None;
-    if !prev.conn.is_empty() {
+    if conn_enabled && !prev.conn.is_empty() {
         let usable = matches!((&surface, &prev.conn_sig), (Some(s), Some(b)) if s.0 == *b);
         if usable {
             base_seed = Some(std::mem::take(&mut prev.conn));
@@ -668,37 +688,49 @@ fn run_watch(args: &Args, cfg: &Config) -> Result<()> {
             conn_seed_rejected(&mut log, "baseline.json", "different or unknown surface", n);
         }
     }
+    if !conn_enabled {
+        prev.conn = Snap::new();
+    }
 
-    let (source, rows) = match &surface {
-        None => {
-            // Nothing can be validated against an unreadable surface; start clean and say so.
-            conn_seed_rejected(
-                &mut log,
-                "conn-state.json",
-                "surface unknown (incomplete first sweep)",
-                0,
-            );
-            ("none", Snap::new())
+    let from_base = |seed: Option<Snap>| -> (&'static str, Snap) {
+        match seed {
+            Some(seed) => ("baseline", seed),
+            None => ("none", Snap::new()),
         }
-        Some(sig) => match (connstate::load(&cfg.root, sig), base_seed) {
-            (connstate::Loaded::Usable(rows), _) if !rows.is_empty() => ("sidecar", rows),
-            (connstate::Loaded::Usable(_), Some(seed)) => ("baseline", seed),
-            (connstate::Loaded::Usable(_), None) => ("none", Snap::new()),
-            (connstate::Loaded::Unusable, Some(seed)) => ("baseline", seed),
-            (connstate::Loaded::Unusable, None) => ("none", Snap::new()),
-            (connstate::Loaded::OtherSurface, seed) => {
+    };
+    let (source, rows) = if !conn_enabled {
+        ("none", Snap::new())
+    } else {
+        match &surface {
+            None => {
+                // Nothing can be validated against an unreadable surface; start clean and
+                // say so, since the operator could otherwise read it as "nothing changed".
                 conn_seed_rejected(
                     &mut log,
                     "conn-state.json",
-                    "unusable or different surface",
+                    "surface unknown (incomplete first sweep)",
                     0,
                 );
-                match seed {
-                    Some(seed) => ("baseline", seed),
-                    None => ("none", Snap::new()),
-                }
+                from_base(base_seed)
             }
-        },
+            Some(sig) => match (connstate::load(&cfg.root, sig), base_seed) {
+                (connstate::Loaded::Usable(rows), _) if !rows.is_empty() => ("sidecar", rows),
+                (connstate::Loaded::Usable(_), seed) => from_base(seed),
+                (connstate::Loaded::Absent, seed) => from_base(seed),
+                (connstate::Loaded::DifferentSurface { groups }, seed) => {
+                    conn_seed_rejected(&mut log, "conn-state.json", "different surface", groups);
+                    from_base(seed)
+                }
+                (connstate::Loaded::Legacy { groups }, seed) => {
+                    conn_seed_rejected(&mut log, "conn-state.json", "legacy or corrupt file", groups);
+                    from_base(seed)
+                }
+                (connstate::Loaded::Corrupt, seed) => {
+                    conn_seed_rejected(&mut log, "conn-state.json", "unreadable or corrupt", 0);
+                    from_base(seed)
+                }
+            },
+        }
     };
     if !rows.is_empty() {
         let n = rows.len();

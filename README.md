@@ -139,7 +139,14 @@ cargo build --release          # Windows 原生（MSVC）
    **该缺陷已修复并实测复现。**
    旧格式（无签名）的 sidecar/baseline 一律不信任，同样是一次性重报。
 13. 报告文本为中文；`task` / `svc` 两个来源尚未发射事件。
-14. **未自带常驻方式**：想长期运行请自行注册计划任务，例如（管理员）：
+14. **地址族不对称**：IPv6 表读不到（rc 50/87）会优雅降级成只用 IPv4，但 IPv4 表**任何**错误都会让
+   本轮 `complete=false` 并永久不产会话事件（保守方向：宁沉默、不编造）。IPv6-only 主机等于没有会话面。
+   另外，IPv6 栈**瞬时**返回"不支持"会被当作"本机真的没有 IPv6"，那种情况下 v6 组会被报成关闭
+   （未实测，本机无法注入该错误）。
+15. **`conn_seed_rejected` 会说明原因**：`different surface`（换了过滤条件）/`legacy or corrupt file`
+   （旧格式或垃圾文件，附实际组数）/`unreadable or corrupt`（读不出来或不是 JSON）/
+   `surface unknown`（首次采样不完整）。缺文件**不**记行——新目录不该刷屏。
+16. **未自带常驻方式**：想长期运行请自行注册计划任务，例如（管理员）：
     ```powershell
     $a = New-ScheduledTaskAction -Execute 'D:\tools\amon.exe' -Argument '--watch --root D:\amon-state --quiet'
     Register-ScheduledTask -TaskName amon -Action $a -Trigger (New-ScheduledTaskTrigger -AtStartup) -RunLevel Highest
