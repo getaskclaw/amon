@@ -6,6 +6,9 @@ name: ci
 on:
   push:
     branches: [main]
+    # Release tags must be built too: a tag whose own CI never ran is how a stale
+    # lockfile reached v0.1.1/v0.1.2 unnoticed.
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
