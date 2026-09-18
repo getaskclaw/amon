@@ -9,7 +9,21 @@ regenerated here; `cargo build --release --locked` passes on Windows and on the 
 
 Lesson recorded in the repo so it does not recur: a version bump must be followed by a
 `--locked` build locally, because a warm `cargo build` can satisfy the build cache without
-rewriting the lockfile.
+rewriting the lockfile. The workflow now also builds `v*` tags — a tag whose own CI never ran
+is how the stale lockfile reached v0.1.1 and v0.1.2 unnoticed.
+
+### v0.1.1 and v0.1.2 are retagged
+
+Both tags now point at commits that build with `--locked` (previously their CI failed on the
+lockfile and, because the workflow had no tag trigger, nothing would have caught it):
+
+- content is that release's own source; the only differences from the original commits are
+  `Cargo.lock`'s version line and the workflow's `v*` tag trigger (verified: `2 files
+  changed, 4 insertions(+), 1 deletion(-)`);
+- each was verified locally with `cargo build --release --locked --target
+  x86_64-pc-windows-gnu`, and each now has its own green CI run on the tag push;
+- procedure, for the record: `scripts/retag-release-lockfix.sh <original-commit> <tag>
+  <version>`.
 
 ## 0.1.2 — observability cleanups from round 4 (two independent SHIPs)
 
