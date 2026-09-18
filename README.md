@@ -176,6 +176,9 @@ cargo build --release          # Windows 原生（MSVC）
 - 开发过程中做了三轮独立对抗式盲检（审查者与写者不是同一个模型家族），每一轮都挖出真缺陷并逐一复现、修复、复测，记录见 [VERIFICATION.md](VERIFICATION.md)。
 
 ## 构建
+> 注意：改版本号后请务必跑一次 `cargo build --release --locked`——CI 用 `--locked` 构建，
+> 而一次"命中缓存"的普通 `cargo build` 可能在**不重写 `Cargo.lock`** 的情况下就返回成功。
+
 
 **Windows 原生（MSVC）**：`cargo build --release`（需要 Rust + VC 工具链）。
 

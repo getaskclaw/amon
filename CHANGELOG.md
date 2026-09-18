@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3 — packaging fix (the release tag is the first with a green build)
+
+**No behaviour change.** The `Cargo.lock` in the 0.1.1 and 0.1.2 commits was left at the old
+version while `Cargo.toml` moved on, so CI — which builds with `--locked` — failed on those
+two commits (`cannot update the lock file ... because --locked was passed`). The lock is
+regenerated here; `cargo build --release --locked` passes on Windows and on the cross target.
+
+Lesson recorded in the repo so it does not recur: a version bump must be followed by a
+`--locked` build locally, because a warm `cargo build` can satisfy the build cache without
+rewriting the lockfile.
+
 ## 0.1.2 — observability cleanups from round 4 (two independent SHIPs)
 
 Three non-blockers that both reviewers found independently, plus two documented trade-offs.

@@ -231,6 +231,10 @@ No path in the code opens a watched resource for writing. The registry is opened
   re-measured. Record: [VERIFICATION.md](VERIFICATION.md).
 
 ## Building
+> Note: after any version bump, run `cargo build --release --locked` once. CI builds with
+> `--locked`, and a cache-satisfied plain `cargo build` can return success **without rewriting
+> `Cargo.lock`**.
+
 
 **Native Windows (MSVC)**: `cargo build --release` (Rust + the VC toolchain).
 
