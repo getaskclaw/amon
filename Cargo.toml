@@ -1,6 +1,6 @@
 [package]
 name = "amon"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Read-only change monitor for an untrusted Windows companion app"
 license = "MIT"

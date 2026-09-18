@@ -129,3 +129,27 @@ forge **跑出了实质结果，但没来得及写结论**——它在自定义�
 
 chisel（cursor-acp）第三次尝试仍未产出 verdict：它卡在"PowerShell 被此模式拦截"，
 只能读到审计留下的证据，没能跑自己的活体攻击（它明确表示"不想借别人的判决"）。
+
+## 限制 12/14 的修复（0.1.1）：持久化状态带上过滤签名
+
+**动因**：第二席 forge 的 C5 用例——以 `--conn-loopback` 跑出的种子，配默认过滤重启时，
+凭空冒出 58 条 `conn_closed`（55 条是回环组）。这不是漏报，是**发明**：那些会话在默认过滤下
+不可能被"打开"。
+
+**改法**：`conn-state.json` 与 baseline 的会话段都记录过滤签名
+（`v1|loopback=…|pid0=…|families=…`）。签名不符、无法确定表面、或是旧格式（无签名）→
+**不作为种子**，记一次 `meta/conn_seed_rejected`，代价是当次把当前会话各报一遍。
+签名里的地址族来自"决定种子之前先做的一次采样"——因为族集合只有采样之后才知道。
+
+**同一台真机上的前后对照**
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| 回环种子 + 默认过滤重启 | `opened=0 closed=58`（回环关闭 55 条） | `closed=2`，**回环关闭 0 条**，并记录 `conn_seed_rejected {groups:130, reason:"different or unknown surface"}` |
+| 同表面重复重启 | 正常续接 | 仍正常续接（`conn_state_resumed {groups:37, source:"sidecar"}`），仅真实 churn（opened=3 closed=7） |
+| 旧格式（纯 map）sidecar | 被信任 → 幽灵关闭事件 | 拒绝 → 伪造键 **0 条事件** |
+| 旧 baseline（无 `conn_sig`） | 被信任 | 拒绝 + 一次重报（opened=32）+ 记录原因 |
+| **连签名一起伪造**的 sidecar | 被信任 | **仍被信任**（1 条幽灵关闭）——签名不是密钥，这条限制成立并已写进 README 第 10 条 |
+
+**回归**：`--selftest` 12/12 exit 0；生命周期探针（v4 非回环 / 回环 / IPv6 `[::1]`）全部通过。
+二进制 sha256 `849a4dbba32f29fc986da00758b9e4b05cfe39642a867243d3d58a5b8631e5d7`。

@@ -163,16 +163,20 @@ purpose. Change those three and everything else is reusable. Exposing them as CL
     from being reported (the seed already "knows" the key). A same-account attacker could
     equally kill the monitor outright, so this is not solvable with crypto — the answer is
     operational: keep `--root` out of the watched program's reach (separate account or ACLs)
-    and watch amon itself.
+    and watch amon itself. Note the filter signature is **not a secret**: it stops accidents
+    like a filter change, not a forgery that copies the format (measured: a forged sidecar
+    carrying the correct signature is still trusted and yields one ghost close event).
 11. **One root, one watcher at a time**: two processes sharing a root both append to
     `events.jsonl` and fight over `conn-state.json`, producing what look like duplicated
     events (observed during review).
-12. **A filter change plus a restart emits a burst of `conn_closed`** — the mirror image of
-    limitation 3. A sidecar written with `--conn-loopback` carries loopback groups; restarting
-    with the default filter makes them "in the seed but absent from the sweep", so they are
-    reported as closed (measured `opened=0 closed=58`, 55 of them loopback). Intended fix:
-    record a filter signature in the sidecar and refuse to seed on a mismatch — **not
-    implemented yet**.
+12. **A filter change re-reports what exists, once.** Both the sidecar and the baseline's
+    `conn` section record a **filter signature** (`v1|loopback=…|pid0=…|families=…`). On a
+    mismatch the seed is not used and `meta/conn_seed_rejected` says so; the cost is one
+    re-report of the conversations that exist right now. This replaces the earlier behaviour,
+    where a `--conn-loopback` seed plus default filters emitted 58 `conn_closed` — 55 of them
+    loopback — for conversations this run could never have opened. **That defect is fixed and
+    reproduced in tests.** Pre-signature (legacy) sidecars and baselines are never trusted, at
+    the same one-time cost.
 13. Reports are in Chinese; `task` / `svc` sources do not emit events yet.
 14. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
     (elevated):

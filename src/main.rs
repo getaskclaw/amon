@@ -174,6 +174,15 @@ mod clap_lite {
 /// rewriting a multi-KB file on every tick.
 const CONN_SIDECAR_MIN_SECS: u64 = 15;
 
+/// One line explaining why a persisted seed was not used, so a smaller surface or a
+/// filter change is visible in the log instead of looking like a fresh start.
+fn conn_seed_rejected(log: &mut EventLog, target: &'static str, reason: &'static str, groups: usize) {
+    let _ = log.write(
+        &Event::new(Source::Meta, "conn_seed_rejected", target)
+            .with_detail(serde_json::json!({ "reason": reason, "groups": groups })),
+    );
+}
+
 /// Sidecar persistence for the connection snapshot.
 ///
 /// `baseline.json` is written once, at start; the connection set moves fast, so
@@ -189,9 +198,54 @@ mod connstate {
 
     const FILE: &str = "conn-state.json";
 
+    /// What the persisted rows were produced by.
+    ///
+    /// The seed exists to suppress re-reporting groups the monitor already knew about, so
+    /// it is only valid for the *same* surface: a sidecar written with `--conn-loopback`
+    /// describes loopback groups that a default-filter sweep will never contain, and using
+    /// it as a seed would report every one of them as closed — an invented observation.
+    /// The baseline's `conn` section has exactly the same requirement, which is why the
+    /// signature travels with both.
+    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone, Debug)]
+    pub struct Sig(pub String);
+
+    impl Sig {
+        pub fn of(f: &crate::snapshot::ConnFilter, families: &[&'static str]) -> Self {
+            let mut fams: Vec<&str> = families.to_vec();
+            fams.sort_unstable();
+            Sig(format!(
+                "v1|loopback={}|pid0={}|families={}",
+                f.include_loopback,
+                f.include_pid0,
+                fams.join("+")
+            ))
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct File {
+        sig: String,
+        rows: Snap,
+    }
+
+    /// What a load attempt produced, so the caller can say *why* a seed was skipped
+    /// instead of silently behaving differently.
+    pub enum Loaded {
+        Usable(Snap),
+        /// Parseable but written under a different surface, or written by a build that
+        /// did not record one.
+        OtherSurface,
+        /// Missing, truncated, or not the shape we write.
+        Unusable,
+    }
+
     /// Atomic-ish write: temp file then rename, so a reader never sees a half file.
-    pub fn save(root: &Path, rows: &Snap) {
-        if let Ok(raw) = serde_json::to_string(rows) {
+    pub fn save(root: &Path, sig: &Sig, rows: &Snap) {
+        let f = File {
+            sig: sig.0.clone(),
+            rows: rows.clone(),
+        };
+        if let Ok(raw) = serde_json::to_string(&f) {
             let tmp = root.join(format!("{FILE}.tmp"));
             if std::fs::write(&tmp, raw).is_ok() {
                 let _ = std::fs::rename(&tmp, root.join(FILE));
@@ -199,14 +253,25 @@ mod connstate {
         }
     }
 
-    /// Load and validate. A truncated or corrupted file yields `None` (fall back to
-    /// the baseline) and entries that are not the shape we write are dropped, so a
-    /// half-written file can never manufacture events for groups that never existed.
-    pub fn load(root: &Path) -> Option<Snap> {
-        let raw = std::fs::read_to_string(root.join(FILE)).ok()?;
-        let parsed: Snap = serde_json::from_str(&raw).ok()?;
-        Some(
-            parsed
+    /// Load and validate. Entries that are not the shape we write are dropped, so a
+    /// half-written file can never manufacture groups that never existed.
+    pub fn load(root: &Path, sig: &Sig) -> Loaded {
+        let raw = match std::fs::read_to_string(root.join(FILE)) {
+            Ok(r) => r,
+            Err(_) => return Loaded::Unusable,
+        };
+        let f: File = match serde_json::from_str(&raw) {
+            Ok(f) => f,
+            // A pre-signature sidecar is a plain map of key -> value; parseable JSON,
+            // but its surface is unknown. Refusing it costs one re-report; trusting it
+            // can cost a fabricated close burst.
+            Err(_) => return Loaded::OtherSurface,
+        };
+        if f.sig != sig.0 {
+            return Loaded::OtherSurface;
+        }
+        Loaded::Usable(
+            f.rows
                 .into_iter()
                 .filter(|(k, v)| {
                     k.contains('|')
@@ -364,6 +429,10 @@ struct Baseline {
     /// "what changed before I was watching" line.
     #[serde(default)]
     conn: Snap,
+    /// The surface `conn` was captured from. Missing on older baselines, and a baseline
+    /// captured with other filters is not a valid seed for this run.
+    #[serde(default)]
+    conn_sig: Option<String>,
     auth: Snap,
 }
 
@@ -387,9 +456,16 @@ fn capture(cfg: &Config, connf: &snapshot::ConnFilter) -> Baseline {
     let t0 = Instant::now();
     // A baseline must be a complete picture or nothing: seeding it from a partial
     // sweep would make the very first diff compare against a view that never was.
-    let conn = match snapshot::snapshot_connections(connf) {
-        s if s.complete => s.rows,
-        _ => Snap::new(),
+    let sweep = snapshot::snapshot_connections(connf);
+    let complete = sweep.complete;
+    let families = sweep.families.clone();
+    let conn = if complete { sweep.rows } else { Snap::new() };
+    // Only a complete sweep may define the surface signature: an incomplete one says
+    // nothing about which families this host has.
+    let sig = if complete {
+        Some(connstate::Sig::of(connf, &families).0)
+    } else {
+        None
     };
     let b = Baseline {
         proc: snapshot::snapshot_processes(),
@@ -397,6 +473,7 @@ fn capture(cfg: &Config, connf: &snapshot::ConnFilter) -> Baseline {
         reg: snapshot::snapshot_run_keys(),
         listener: snapshot::snapshot_listeners(),
         conn,
+        conn_sig: sig,
         auth: authdb::snapshot(&cfg.auth_db, &cfg.auth_keys, &cfg.root).unwrap_or_default(),
     };
     let _ = t0;
@@ -567,17 +644,63 @@ fn run_watch(args: &Args, cfg: &Config) -> Result<()> {
     let mut channel_ok = ChannelStatus::default();
 
     let mut prev = baseline;
-    // Seed from the most recent observation available. The sidecar outranks
-    // `baseline.conn` — not merely fills in for a missing one: `baseline.json`
-    // records the moment `--baseline` ran, which can be arbitrarily old, so
-    // preferring it would re-report every conversation opened since (reviewed
-    // defect: 3 of 4 reopened groups were already in the sidecar).
-    let seeded = match connstate::load(&cfg.root) {
-        Some(rows) if !rows.is_empty() => Some(("sidecar", rows)),
-        _ if !prev.conn.is_empty() => Some(("baseline", std::mem::take(&mut prev.conn))),
-        _ => None,
+
+    // Learn this run's surface *before* deciding whether any persisted seed may be
+    // trusted. The address-family set is only knowable from a sweep, and a seed written
+    // for a different surface is a source of invented closes, not of continuity:
+    // a loopback-inclusive seed plus default filters emitted 58 conn_closed — 55 of them
+    // loopback — for conversations this run could never have opened (reviewed defect).
+    let probe = snapshot::snapshot_connections(&args.conn_filter());
+    let surface = if probe.complete {
+        Some(connstate::Sig::of(&args.conn_filter(), &probe.families))
+    } else {
+        None
     };
-    if let Some((source, rows)) = seeded {
+
+    let mut base_seed: Option<Snap> = None;
+    if !prev.conn.is_empty() {
+        let usable = matches!((&surface, &prev.conn_sig), (Some(s), Some(b)) if s.0 == *b);
+        if usable {
+            base_seed = Some(std::mem::take(&mut prev.conn));
+        } else {
+            let n = prev.conn.len();
+            prev.conn = Snap::new();
+            conn_seed_rejected(&mut log, "baseline.json", "different or unknown surface", n);
+        }
+    }
+
+    let (source, rows) = match &surface {
+        None => {
+            // Nothing can be validated against an unreadable surface; start clean and say so.
+            conn_seed_rejected(
+                &mut log,
+                "conn-state.json",
+                "surface unknown (incomplete first sweep)",
+                0,
+            );
+            ("none", Snap::new())
+        }
+        Some(sig) => match (connstate::load(&cfg.root, sig), base_seed) {
+            (connstate::Loaded::Usable(rows), _) if !rows.is_empty() => ("sidecar", rows),
+            (connstate::Loaded::Usable(_), Some(seed)) => ("baseline", seed),
+            (connstate::Loaded::Usable(_), None) => ("none", Snap::new()),
+            (connstate::Loaded::Unusable, Some(seed)) => ("baseline", seed),
+            (connstate::Loaded::Unusable, None) => ("none", Snap::new()),
+            (connstate::Loaded::OtherSurface, seed) => {
+                conn_seed_rejected(
+                    &mut log,
+                    "conn-state.json",
+                    "unusable or different surface",
+                    0,
+                );
+                match seed {
+                    Some(seed) => ("baseline", seed),
+                    None => ("none", Snap::new()),
+                }
+            }
+        },
+    };
+    if !rows.is_empty() {
         let n = rows.len();
         prev.conn = rows;
         let _ = log.write(
@@ -791,7 +914,13 @@ fn run_watch(args: &Args, cfg: &Config) -> Result<()> {
                     .map(|t| now.duration_since(t) >= Duration::from_secs(CONN_SIDECAR_MIN_SECS))
                     .unwrap_or(true);
                 if changed && due {
-                    connstate::save(&cfg.root, &prev.conn);
+                    // The signature describes the surface these rows came from, so it is
+                    // derived from the sweep that produced them — not from startup state.
+                    connstate::save(
+                        &cfg.root,
+                        &connstate::Sig::of(&args.conn_filter(), &sweep.families),
+                        &prev.conn,
+                    );
                     conn_saved = Some(prev.conn.clone());
                     conn_saved_at = Some(now);
                 }
