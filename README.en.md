@@ -167,8 +167,14 @@ purpose. Change those three and everything else is reusable. Exposing them as CL
 11. **One root, one watcher at a time**: two processes sharing a root both append to
     `events.jsonl` and fight over `conn-state.json`, producing what look like duplicated
     events (observed during review).
-12. Reports are in Chinese; `task` / `svc` sources do not emit events yet.
-13. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
+12. **A filter change plus a restart emits a burst of `conn_closed`** — the mirror image of
+    limitation 3. A sidecar written with `--conn-loopback` carries loopback groups; restarting
+    with the default filter makes them "in the seed but absent from the sweep", so they are
+    reported as closed (measured `opened=0 closed=58`, 55 of them loopback). Intended fix:
+    record a filter signature in the sidecar and refuse to seed on a mismatch — **not
+    implemented yet**.
+13. Reports are in Chinese; `task` / `svc` sources do not emit events yet.
+14. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
     (elevated):
     ```powershell
     $a = New-ScheduledTaskAction -Execute 'D:\tools\amon.exe' -Argument '--watch --root D:\amon-state --quiet'

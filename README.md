@@ -130,8 +130,12 @@ cargo build --release          # Windows 原生（MSVC）
    才是正解，并顺带盯住 amon 自己。
 11. **一个 root 同时只能跑一个 watcher**：两个进程共用一个 root 会互相追加 `events.jsonl`、
    争抢 `conn-state.json`，产生看似重复的事件（评审中实际踩到过）。
-12. 报告文本为中文；`task` / `svc` 两个来源尚未发射事件。
-13. **未自带常驻方式**：想长期运行请自行注册计划任务，例如（管理员）：
+12. **换过滤条件后重启会冒出一批 `conn_closed`**：第 3 条的镜像。以 `--conn-loopback` 跑出的
+   sidecar 里带着回环组，换成默认过滤重启后，这些组"种子里有、当前采样里没有"，于是被报成关闭
+   （实测 `opened=0 closed=58`，其中 55 条是回环组）。修复方向：在 sidecar 里记录过滤签名，
+   不符就不作为种子并记一次 meta——**尚未实现**。
+13. 报告文本为中文；`task` / `svc` 两个来源尚未发射事件。
+14. **未自带常驻方式**：想长期运行请自行注册计划任务，例如（管理员）：
     ```powershell
     $a = New-ScheduledTaskAction -Execute 'D:\tools\amon.exe' -Argument '--watch --root D:\amon-state --quiet'
     Register-ScheduledTask -TaskName amon -Action $a -Trigger (New-ScheduledTaskTrigger -AtStartup) -RunLevel Highest
