@@ -146,7 +146,13 @@ cargo build --release          # Windows 原生（MSVC）
 15. **`conn_seed_rejected` 会说明原因**：`different surface`（换了过滤条件）/`legacy or corrupt file`
    （旧格式或垃圾文件，附实际组数）/`unreadable or corrupt`（读不出来或不是 JSON）/
    `surface unknown`（首次采样不完整）。缺文件**不**记行——新目录不该刷屏。
-16. **未自带常驻方式**：想长期运行请自行注册计划任务，例如（管理员）：
+16. **baseline 的陈旧签名不会自愈**：换过滤条件后，每次启动都会各记一行拒绝（baseline 一行、sidecar 一行），
+   直到重新跑 `--baseline`。这是**有意的**——它在持续告诉你"这份基线对这个表面不可用"，
+   而不是只提一次然后让你以为没问题。
+17. **baseline.json 与 sidecar 同级可信**：它的会话行不做逐行形状过滤，手改 baseline 可以注入
+   一对 open+close（与限制 10 同源：能写 `--root` 的人本来就能改 events）。另有一个纯观感项：
+   极小概率下（rename 覆盖目录失败）会留下一个内容有效的孤儿 `conn-state.json.tmp`。
+18. **未自带常驻方式**：想长期运行请自行注册计划任务，例如（管理员）：
     ```powershell
     $a = New-ScheduledTaskAction -Execute 'D:\tools\amon.exe' -Argument '--watch --root D:\amon-state --quiet'
     Register-ScheduledTask -TaskName amon -Action $a -Trigger (New-ScheduledTaskTrigger -AtStartup) -RunLevel Highest

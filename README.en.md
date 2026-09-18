@@ -188,7 +188,16 @@ purpose. Change those three and everything else is reusable. Exposing them as CL
     `legacy or corrupt file` (pre-signature or junk, with the real group count) /
     `unreadable or corrupt` (unreadable, or not JSON) / `surface unknown` (the first sweep
     was incomplete). A missing file logs nothing — a fresh root should stay quiet.
-16. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
+16. **A stale baseline signature does not self-heal**: after a filter change every start logs one
+    rejection line for the baseline and one for the sidecar until `--baseline` is run again.
+    This is deliberate — it keeps telling you the baseline is unusable for this surface instead
+    of mentioning it once and letting you assume all is well.
+17. **baseline.json is as trusted as the sidecar**: its conversation rows get no per-row shape
+    filtering, so hand-editing the baseline can inject one open/close pair (same root cause as
+    limitation 10 — whoever can write `--root` can already edit the event log). Purely cosmetic
+    footnote: on a rare rename-over-directory failure an orphan `conn-state.json.tmp` with valid
+    contents can be left behind.
+18. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
     (elevated):
     ```powershell
     $a = New-ScheduledTaskAction -Execute 'D:\tools\amon.exe' -Argument '--watch --root D:\amon-state --quiet'
