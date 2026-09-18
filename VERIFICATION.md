@@ -1,0 +1,65 @@
+# 验证记录 / Verification record
+
+**English summary.** This tool was hardened by three rounds of independent adversarial
+blind review performed by model families other than the one that wrote the code. Every
+round found defects that self-testing had missed — including one where a "fix" from the
+previous round covered only half the cases it claimed to. Each finding below is listed with
+how it was reproduced, what changed, and how the fix was re-measured. A round-3 re-check was
+still in flight when this repository was first published; its findings land as follow-up
+commits. The author's own test suite is listed separately and is **not** counted as
+independent verification.
+
+---
+
+## 方法
+
+- 代码由编排席编写；**判定权交给另一个模型家族的审查者**，每轮盲检只看契约 + 代码 + 二进制，
+  不接受"作者说测过了"。
+- 每轮开工前把契约文件与源码 sha256 钉死；作者自测只算冒烟，不算通过。
+- 每条发现都先**独立复现**再改；改完必须给出**新的实测数字**，不接受"应该修好了"。
+- 二进制在真实 Windows 上跑，探针用 PowerShell 造真实 TCP 会话（对端用本机 LAN 地址，
+  不依赖外网可达性）。
+
+## 作者自测（不作为独立验证）
+
+| 项 | 结果 |
+|---|---|
+| 构建 `cargo build --release`（x86_64-pc-windows-gnu） | 通过，无新增告警 |
+| `amon --selftest` 纯逻辑断言 | **12/12 通过**，退出码 0 |
+| 生命周期探针（v4 非回环两端 open/close、默认隐藏回环、`--conn-loopback` 可见、IPv6 `[::1]` open/ESTABLISHED/close、多套接字分组、监听面无回归） | **15/15 通过** |
+| 旧版 `baseline.json`（无 `conn` 段）加载 | 通过（靠 `serde(default)`，首次轮询把现状各报一遍） |
+
+## 第 1 轮盲检 — 结论 FIX
+
+| # | 严重度 | 发现 | 复现 | 修复与复测 |
+|---|---|---|---|---|
+| A1 | **blocker** | `--conn-sec` 形同虚设：连接轮询被嵌在 `--poll` 分支内，任何比 `--poll` 小的采样间隔都被静默钳住 | `--conn-sec 2 --poll 30`：连接 18:18:03 建立，事件 18:18:30 才出现（落在 :00/:30 边界） | 提出为独立定时器。复测：连接 18:53:33.772 建立 → 事件 18:53:34（+0s），整轮 14.2s（旧代码下这一轮根本不会出事件） |
+| A2 | non-blocker | `baseline.json` 从不回写会话段，升级后**每次重启**都重报一遍 | 去掉 `conn` 段后跑 watch，文件里 `"conn": {}` 一直不变 | 新增 `conn-state.json` sidecar 续接（原子写） |
+| A3 | non-blocker | `::ffff:127.0.0.1` 能绕过回环过滤（`Ipv6Addr::is_loopback()` 只认 `::1`） | 本机无法造出 v4-mapped 套接字（审查者同样受限） | 加 `to_ipv4_mapped()` 判定，并把规则做成**二进制内可执行断言** |
+| A4 | non-blocker | 取表失败与空表不可区分：失败会被当成"没有会话"，并伪造一堆 `conn_closed` | 代码级；真实 API 失败无法复现 | `Result<Vec<u8>, u32>` + `ConnSweep{complete,note,families}`：**不完整采样绝不参与差分**，状态翻转记一次 `meta/conn_fetch_incomplete` |
+| A5 | tradeoff | 分组 key 含进程名，名字在 `?`/真名间抖动会伪造一对 close+open | 代码级 + sidecar 键形核对 | key 改为 `<pid>|<对端>`，进程名只留在 detail |
+| A6 | deferred | pid 0 / 自己 pid 的过滤只做了代码级核对 | 无法按需造出 pid 0 行 | 保留为待办，如实标注 |
+
+## 第 2 轮盲检 — 结论 FIX（打中第 1 轮的"修复"本身）
+
+| # | 严重度 | 发现 | 复现 | 修复与复测 |
+|---|---|---|---|---|
+| B1 | **blocker** | 第 1 轮的续接只处理了"baseline 无 conn 段"这一种情况；普通格式 baseline 下 sidecar 被**忽略**，于是 baseline 之后建立、但上一轮已经报过的会话会在每次重启重复上报 | 压住两条套接字跨两个 watch 会话：`baseline.conn=18 / sidecar=21 / run2 opened=4`，其中 **3 条 key 早就在 sidecar 里**；对照组（conn 显式清空）反而正常 | 种子改为**按新旧取**（sidecar 优先，baseline 兜底），恢复事件带 `source` 字段。复测：`run2 opened=0`、`already-in-sidecar=0`、`resume {groups:17, source:"sidecar"}`、被压住的 key 未重复上报 |
+| B1b | non-blocker（同一轮的补充） | sidecar 一会话只写一次会变陈旧 | 代码级 | 改为**变更即写、节流 15s**；如实记录残留窗口：硬杀最多丢 15s，这部分下次启动报一次 |
+| B2 | deferred | 真实 `GetExtendedTcpTable` 失败仍未触发 | 审查者 churn 了 22,783 次表变化都没触发 | 保持"未实测"标注 |
+
+### 该轮附带自查发现（作者自己的断言的错，不是产品错）
+
+写二进制内断言时暴露出：`v6_endpoint` 的端口参数按契约是 **MIB 原始网络序**，而我的断言传了
+host 序。生产调用一直是对的（真机 `[::1]:18483` 渲染正确），但这属于"契约没写下来"。现已
+改名 `port_net_order` 并加断言「端口字节序只交换一次」。
+
+### 损坏 sidecar 加固（同一轮顺带）
+
+截断 JSON / 纯垃圾 / 合法 JSON 但值形状不对，三种都必须降级而非造假：全部回落 baseline
+（`source: "baseline"`），不为伪造键产生事件，不崩。三种情形 **15/15 断言通过**。
+
+## 第 3 轮盲检（复检 + 第二席）
+
+对第 2 轮修复的复检与另一名跨家族审查者的独立破检**在本仓库首次发布时仍在进行**；
+其发现会以跟进提交的形式落地，并更新本节。

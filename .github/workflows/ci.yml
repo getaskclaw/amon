@@ -1,0 +1,33 @@
+name: ci
+
+# amon is Windows-only by design (it is a Windows API monitor), so the build and the
+# pure-logic self-checks run on windows-latest. `amon --selftest` exits non-zero when
+# any check fails, which is what this workflow gates on.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-selftest:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build (release)
+        run: cargo build --release --locked
+      - name: Pure-logic self-checks
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'amon-ci'
+          ./target/release/amon.exe --selftest --root $root
+          if ($LASTEXITCODE -ne 0) { throw "selftest failed with exit $LASTEXITCODE" }
+      - name: Baseline + report smoke
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'amon-ci'
+          ./target/release/amon.exe --baseline --root $root
+          if ($LASTEXITCODE -ne 0) { throw "baseline failed" }
+          Test-Path (Join-Path $root 'baseline.json') | Out-Null
+          ./target/release/amon.exe --report --root $root

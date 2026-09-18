@@ -1,0 +1,16 @@
+# Cross-compile from WSL/Linux to a native Windows PE:
+#
+#   rustup target add x86_64-pc-windows-gnu
+#   cargo build --release --target x86_64-pc-windows-gnu
+#
+# Target choice matters: the *MSVC* Rust target passes MSVC-style link args
+# (/NOLOGO, /OUT:, kernel32.lib) which mingw's ld does not understand, so it cannot be
+# linked with x86_64-w64-mingw32-gcc. Use the *GNU* target instead — rustup ships a std
+# for it and mingw links it cleanly.
+#
+# No [build] target here on purpose: a native Windows/ MSVC checkout should just work with
+# a plain `cargo build`, so the default target follows the host.
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"

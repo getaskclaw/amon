@@ -1,0 +1,60 @@
+[package]
+name = "amon"
+version = "0.1.0"
+edition = "2021"
+description = "Read-only change monitor for an untrusted Windows companion app"
+license = "MIT"
+repository = "https://github.com/getaskclaw/amon"
+readme = "README.md"
+keywords = ["windows", "monitoring", "security", "forensics", "rust"]
+categories = ["command-line-utilities", "os::windows-apis"]
+
+[[bin]]
+name = "amon"
+path = "src/main.rs"
+
+[dependencies]
+# Windows bindings. A small explicit feature set keeps build time and RAM sane.
+windows = { version = "0.58", features = [
+    # ---- registry ----
+    "Win32_System_Registry",
+    # ---- filesystem notifications ----
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",        # ReadDirectoryChangesW lives behind this
+    "Win32_Security",         # CreateFileW lives behind this
+    "Win32_Foundation",
+    # ---- device property keys (CM_NOTIFY_FILTER carries a GUID) ----
+    "Win32_Devices_Properties",
+    # ---- process / thread / snapshot ----
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    # ---- services ----
+    "Win32_System_Services",
+    # ---- device notifications (USB attach) ----
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_System_Power",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
+    # ---- networking (listeners + TCP conversations) ----
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    # ---- WMI (real-time process creation) ----
+    "Win32_System_Wmi",
+    "Win32_System_Com",
+    "Win32_System_Variant",
+    "Win32_System_Ole",
+] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[profile.release]
+opt-level = "z"      # smaller binary -> less to ship
+lto = "thin"         # full LTO + codegen-units=1 needs a lot of RAM; thin is the sane trade
+codegen-units = 4
+strip = true
+panic = "abort"
