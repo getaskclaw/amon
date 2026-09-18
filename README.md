@@ -121,7 +121,16 @@ cargo build --release          # Windows 原生（MSVC）
 6. **监听面仍是 IPv4-only**，会话面才是 v4+v6。
 7. **硬杀最多丢 15s 的 sidecar 更新**，那部分会话下次启动会报一次（节流窗口，见 `CONN_SIDECAR_MIN_SECS`）。
 8. **取表真实失败路径未实测**：本机用 2 万多次表变化也没能触发 `GetExtendedTcpTable` 失败，该分支只有代码级保证（可用 `meta/conn_fetch_incomplete` 观测）。
-9. 报告文本为中文；`task` / `svc` 两个来源尚未发射事件。
+9. **32MB 以上不做内容哈希**：`snapshot.rs` 里超过 32MB 的文件记为 `sha256=BIG_<size>`，
+   只有路径、精确字节数和 mtime。盯"几百 MB 的快照"仍然醒目，但没有内容指纹。
+10. **状态目录是被信任的**：`--root` 下的 `conn-state.json` 只做**形状**校验，不验真伪。
+   能写这个目录的进程可以塞入伪造的分组，从而制造不存在的 `conn_closed`、或让某个未来的
+   `conn_opened` 因为"早就在种子"而不再上报。同账号的恶意程序本来就能杀掉监视器本身，
+   所以这不是加密能解决的问题——**把 `--root` 放在被监视程序够不着的地方**（独立账号/目录 ACL）
+   才是正解，并顺带盯住 amon 自己。
+11. **一个 root 同时只能跑一个 watcher**：两个进程共用一个 root 会互相追加 `events.jsonl`、
+   争抢 `conn-state.json`，产生看似重复的事件（评审中实际踩到过）。
+12. 报告文本为中文；`task` / `svc` 两个来源尚未发射事件。
 10. **未自带常驻方式**：想长期运行请自行注册计划任务，例如（管理员）：
     ```powershell
     $a = New-ScheduledTaskAction -Execute 'D:\tools\amon.exe' -Argument '--watch --root D:\amon-state --quiet'

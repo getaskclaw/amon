@@ -154,7 +154,20 @@ purpose. Change those three and everything else is reusable. Exposing them as CL
 8. **The real table-read failure path is untested**: 20k+ table mutations on this machine
    never triggered a `GetExtendedTcpTable` failure, so that branch has code-level
    guarantees only (watch for `meta/conn_fetch_incomplete`).
-9. Reports are in Chinese; `task` / `svc` sources do not emit events yet.
+9. **Files above 32MB are not content-hashed**: the state string becomes
+   `sha256=BIG_<size>`, leaving path, exact byte size and mtime. A few-hundred-MB snapshot
+   archive is still conspicuous, but it carries no content fingerprint.
+10. **The state directory is trusted**: `conn-state.json` under `--root` is validated for
+    *shape*, not for truth. Anything that can write there can seed fabricated groups, which
+    produces `conn_closed` for keys that never existed and can keep a future `conn_opened`
+    from being reported (the seed already "knows" the key). A same-account attacker could
+    equally kill the monitor outright, so this is not solvable with crypto — the answer is
+    operational: keep `--root` out of the watched program's reach (separate account or ACLs)
+    and watch amon itself.
+11. **One root, one watcher at a time**: two processes sharing a root both append to
+    `events.jsonl` and fight over `conn-state.json`, producing what look like duplicated
+    events (observed during review).
+12. Reports are in Chinese; `task` / `svc` sources do not emit events yet.
 10. **No daemon mode is provided.** For long-running use, register a scheduled task, e.g.
     (elevated):
     ```powershell
